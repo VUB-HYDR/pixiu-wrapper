@@ -65,6 +65,15 @@ class FakeS3Client:
 
     def get_object(self, Bucket, Key):
         self.get_object_calls += 1
+        if Key == "swap.csv":
+            return {
+                "Body": io.BytesIO(
+                    b"* Project: hupsel\n"
+                    b"* File content: specified output data of SWAP\n"
+                    b"DATETIME,RAIN\n"
+                    b"2002-01-31,4.26\n"
+                )
+            }
         if Key.endswith(".csv"):
             return {"Body": io.BytesIO(b"a,b\n1,2\n")}
         return {"Body": io.BytesIO(b"mock_nc")}
@@ -110,6 +119,19 @@ def test_get_from_csv_uses_cache(tmp_path):
     assert isinstance(first, pd.DataFrame)
     assert first.equals(second)
     assert s3.get_object_calls == 1
+
+
+def test_get_from_csv_forwards_read_csv_kwargs(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=object())
+
+    dataframe = store.get_from_csv("swap.csv", comment="*")
+
+    assert list(dataframe.columns) == ["DATETIME", "RAIN"]
+    assert dataframe.iloc[0]["RAIN"] == 4.26
 
 
 def test_upload_and_download_modes(tmp_path):

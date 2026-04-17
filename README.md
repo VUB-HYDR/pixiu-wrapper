@@ -73,6 +73,9 @@ store = pi.PixiuStore("project1")
 df = store.get_from_csv("data/table.csv")
 ds = store.get_from_nc("data/field.nc")
 
+# Forward pandas.read_csv kwargs for non-standard CSV files
+swap_df = store.get_from_csv("data/input/result_output.csv", comment="*", parse_dates=["DATETIME"])
+
 store.upload("./local/file.txt", "uploads/file.txt")
 store.download(key="uploads/file.txt", local_path="./downloads/file.txt")
 store.download(prefix="uploads/", local_dir="./downloads_all")

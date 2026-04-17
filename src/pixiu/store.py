@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -57,16 +58,16 @@ class PixiuStore:
         else:
             self._fs = s3_filesystem
 
-    def get_from_csv(self, key: str) -> pd.DataFrame:
+    def get_from_csv(self, key: str, **read_csv_kwargs: Any) -> pd.DataFrame:
         record = self._record_for_key(key)
-        cache_key = f"csv:{self.bucket}:{key}"
+        cache_key = self._csv_cache_key(key, read_csv_kwargs)
 
         cached = self._cache.get(cache_key, record)
         if cached is not None:
             return cached
 
         obj = self._s3.get_object(Bucket=self.bucket, Key=key)
-        dataframe = pd.read_csv(obj["Body"])
+        dataframe = pd.read_csv(obj["Body"], **read_csv_kwargs)
         self._cache.set(cache_key, record, dataframe)
         return dataframe
 
@@ -208,6 +209,16 @@ class PixiuStore:
         if value.startswith("s3://"):
             return value[5:]
         return value
+
+    def _csv_cache_key(self, key: str, read_csv_kwargs: dict[str, Any]) -> str:
+        if not read_csv_kwargs:
+            return f"csv:{self.bucket}:{key}"
+
+        try:
+            fingerprint = json.dumps(read_csv_kwargs, sort_keys=True, default=str)
+        except TypeError:
+            fingerprint = repr(sorted(read_csv_kwargs.items(), key=lambda item: item[0]))
+        return f"csv:{self.bucket}:{key}:{fingerprint}"
 
     def _render_tree(
         self,
