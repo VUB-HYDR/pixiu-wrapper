@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -17,23 +16,6 @@ from pixiu.errors import PixiuError
 from pixiu.store import PixiuStore
 
 app = typer.Typer(no_args_is_help=True, help="Pixiu storage helper CLI.")
-
-_BUILTIN_COMMANDS = {"setup", "add-bucket", "ls", "tree", "-h", "--help"}
-
-
-def _rewrite_bucket_first_args(args: list[str]) -> list[str]:
-    if len(args) < 2:
-        return args
-
-    bucket_or_command = args[0].strip()
-    action = args[1].strip().lower()
-    if bucket_or_command in _BUILTIN_COMMANDS:
-        return args
-
-    if action in {"ls", "tree"}:
-        return [action, bucket_or_command, *args[2:]]
-
-    return args
 
 
 @app.command()
@@ -142,9 +124,8 @@ def tree_command(
         typer.echo(line)
 
 
-def main(argv: list[str] | None = None) -> None:
-    args = list(sys.argv[1:] if argv is None else argv)
-    app(args=_rewrite_bucket_first_args(args), prog_name="pixiu")
+def main() -> None:
+    app()
 
 
 if __name__ == "__main__":

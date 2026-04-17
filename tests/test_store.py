@@ -29,6 +29,31 @@ class FakePaginator:
         ]
 
 
+class FakeS3FileSystem:
+    def ls(self, path, detail=True):
+        assert detail is True
+        if path.endswith("next_folder"):
+            return [
+                {"name": f"{path}/nested", "type": "directory"},
+                {"name": f"{path}/file.csv", "type": "file"},
+            ]
+
+        return [
+            {"name": f"{path}/nested", "type": "directory"},
+            {"name": f"{path}/a.csv", "type": "file"},
+        ]
+
+    def find(self, path):
+        if path.endswith("next_folder"):
+            return [f"{path}/nested/file.csv"]
+
+        return [
+            f"{path}/a.csv",
+            f"{path}/nested/b.csv",
+            f"{path}/nested/c.csv",
+        ]
+
+
 class FakeS3Client:
     def __init__(self):
         self.upload_calls = []
@@ -138,7 +163,8 @@ def test_ls_and_tree(tmp_path):
     write_config(config_path)
 
     s3 = FakeS3Client()
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=object())
+    fs = FakeS3FileSystem()
+    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=fs)
 
     directories, files = store.ls()
     assert directories == ["nested"]
@@ -150,4 +176,14 @@ def test_ls_and_tree(tmp_path):
         "|   |-- b.csv",
         "|   `-- c.csv",
         "`-- a.csv",
+    ]
+
+    nested_directories, nested_files = store.ls("next_folder")
+    assert nested_directories == ["nested"]
+    assert nested_files == ["file.csv"]
+
+    nested_tree = store.tree("next_folder")
+    assert nested_tree == [
+        "`-- nested/",
+        "    `-- file.csv",
     ]

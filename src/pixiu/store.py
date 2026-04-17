@@ -135,53 +135,44 @@ class PixiuStore:
         self._cache.clear()
 
     def ls(self, prefix: str | None = None) -> tuple[list[str], list[str]]:
-        normalized_prefix = self._normalize_prefix(prefix)
-        paginator = self._s3.get_paginator("list_objects_v2")
+        target = self._s3_path(prefix)
+        entries = self._fs.ls(target, detail=True)
 
         directories: set[str] = set()
         files: set[str] = set()
 
-        for page in paginator.paginate(
-            Bucket=self.bucket,
-            Prefix=normalized_prefix,
-            Delimiter="/",
-        ):
-            for directory in page.get("CommonPrefixes", []):
-                key_prefix = directory.get("Prefix", "")
-                name = key_prefix[len(normalized_prefix) :].rstrip("/")
-                if name:
-                    directories.add(name)
+        for entry in entries:
+            name = str(entry.get("name", ""))
+            relative = self._relative_to_target(name, target)
+            if not relative:
+                continue
 
-            for item in page.get("Contents", []):
-                object_key = item.get("Key", "")
-                relative = object_key[len(normalized_prefix) :]
-                if not relative or "/" in relative:
-                    continue
-                files.add(relative)
+            if str(entry.get("type", "")).lower() == "directory":
+                directories.add(relative.rstrip("/"))
+            else:
+                files.add(relative.rstrip("/"))
 
         return sorted(directories), sorted(files)
 
     def tree(self, prefix: str | None = None) -> list[str]:
-        normalized_prefix = self._normalize_prefix(prefix)
-        paginator = self._s3.get_paginator("list_objects_v2")
+        target = self._s3_path(prefix)
+        all_files = self._fs.find(target)
 
         directory_paths: set[tuple[str, ...]] = set()
         file_paths: set[tuple[str, ...]] = set()
 
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=normalized_prefix):
-            for item in page.get("Contents", []):
-                object_key = item.get("Key", "")
-                relative = object_key[len(normalized_prefix) :]
-                if not relative:
-                    continue
+        for path in all_files:
+            relative = self._relative_to_target(str(path), target)
+            if not relative:
+                continue
 
-                parts = tuple(segment for segment in relative.split("/") if segment)
-                if not parts:
-                    continue
+            parts = tuple(segment for segment in relative.split("/") if segment)
+            if not parts:
+                continue
 
-                file_paths.add(parts)
-                for depth in range(1, len(parts)):
-                    directory_paths.add(parts[:depth])
+            file_paths.add(parts)
+            for depth in range(1, len(parts)):
+                directory_paths.add(parts[:depth])
 
         return self._render_tree((), directory_paths, file_paths)
 
@@ -196,6 +187,27 @@ class PixiuStore:
         if not normalized:
             return ""
         return f"{normalized}/"
+
+    def _s3_path(self, prefix: str | None) -> str:
+        normalized_prefix = self._normalize_prefix(prefix).rstrip("/")
+        if not normalized_prefix:
+            return self.bucket
+        return f"{self.bucket}/{normalized_prefix}"
+
+    def _relative_to_target(self, path: str, target: str) -> str:
+        clean_path = self._strip_s3_protocol(path).strip("/")
+        clean_target = self._strip_s3_protocol(target).strip("/")
+
+        if clean_path == clean_target:
+            return ""
+        if clean_path.startswith(f"{clean_target}/"):
+            return clean_path[len(clean_target) + 1 :]
+        return clean_path.split("/")[-1]
+
+    def _strip_s3_protocol(self, value: str) -> str:
+        if value.startswith("s3://"):
+            return value[5:]
+        return value
 
     def _render_tree(
         self,

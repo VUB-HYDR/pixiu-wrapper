@@ -47,16 +47,16 @@ Browse bucket contents from CLI:
 
 ```bash
 # List root of bucket alias
-pixiu project1 ls
+pixiu ls project1
 
 # List one folder deeper
-pixiu project1 ls next_folder
+pixiu ls project1 next_folder
 
 # Render full tree from bucket root
-pixiu project1 tree
+pixiu tree project1
 
 # Render tree from a specific prefix
-pixiu project1 tree next_folder
+pixiu tree project1 next_folder
 ```
 
 ## Usage
@@ -76,6 +76,13 @@ ds = store.get_from_nc("data/field.nc")
 store.upload("./local/file.txt", "uploads/file.txt")
 store.download(key="uploads/file.txt", local_path="./downloads/file.txt")
 store.download(prefix="uploads/", local_dir="./downloads_all")
+
+directories, files = store.ls("uploads")
+print("directories:", directories)
+print("files:", files)
+
+tree_lines = store.tree("uploads")
+print("\n".join(tree_lines))
 ```
 
 ### Download modes

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from pixiu.cli import _rewrite_bucket_first_args, app
+from pixiu.cli import app
 from pixiu.config import load_config
 
 runner = CliRunner()
@@ -106,9 +106,3 @@ def test_ls_and_tree_commands(monkeypatch):
     assert tree_nested.exit_code == 0
     assert tree_nested.stdout.splitlines()[0] == "next_folder"
     assert "`-- nested/" in tree_nested.stdout
-
-
-def test_rewrite_bucket_first_args():
-    assert _rewrite_bucket_first_args(["project1", "ls"]) == ["ls", "project1"]
-    assert _rewrite_bucket_first_args(["project1", "tree", "folder"]) == ["tree", "project1", "folder"]
-    assert _rewrite_bucket_first_args(["setup"]) == ["setup"]
