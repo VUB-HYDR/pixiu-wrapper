@@ -9,12 +9,21 @@ from pixiu.store import PixiuStore
 
 
 class FakePaginator:
-    def paginate(self, Bucket, Prefix):
+    def paginate(self, Bucket, Prefix, Delimiter=None):
+        if Delimiter == "/":
+            return [
+                {
+                    "CommonPrefixes": [{"Prefix": f"{Prefix}nested/"}],
+                    "Contents": [{"Key": f"{Prefix}a.csv"}],
+                }
+            ]
+
         return [
             {
                 "Contents": [
                     {"Key": f"{Prefix}a.csv"},
                     {"Key": f"{Prefix}nested/b.csv"},
+                    {"Key": f"{Prefix}nested/c.csv"},
                 ]
             }
         ]
@@ -97,7 +106,7 @@ def test_upload_and_download_modes(tmp_path):
     assert single_target.exists()
 
     many = store.download(prefix="uploads/", local_dir=tmp_path / "many")
-    assert len(many) == 2
+    assert len(many) == 3
     assert all(path.exists() for path in many)
 
 
@@ -122,3 +131,23 @@ def test_get_from_nc_is_cacheable(tmp_path, monkeypatch):
     assert first == {"ok": True}
     assert second == {"ok": True}
     assert open_calls["count"] == 1
+
+
+def test_ls_and_tree(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=object())
+
+    directories, files = store.ls()
+    assert directories == ["nested"]
+    assert files == ["a.csv"]
+
+    tree_lines = store.tree()
+    assert tree_lines == [
+        "|-- nested/",
+        "|   |-- b.csv",
+        "|   `-- c.csv",
+        "`-- a.csv",
+    ]

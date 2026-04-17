@@ -43,6 +43,22 @@ Example with a second alias:
 pixiu add-bucket project2 hydr-bgw-project2
 ```
 
+Browse bucket contents from CLI:
+
+```bash
+# List root of bucket alias
+pixiu project1 ls
+
+# List one folder deeper
+pixiu project1 ls next_folder
+
+# Render full tree from bucket root
+pixiu project1 tree
+
+# Render tree from a specific prefix
+pixiu project1 tree next_folder
+```
+
 ## Usage
 
 After setup, use aliases in your code (for example `project1`) instead of real bucket names.

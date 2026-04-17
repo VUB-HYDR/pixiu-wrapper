@@ -134,8 +134,113 @@ class PixiuStore:
     def clear_cache(self) -> None:
         self._cache.clear()
 
+    def ls(self, prefix: str | None = None) -> tuple[list[str], list[str]]:
+        normalized_prefix = self._normalize_prefix(prefix)
+        paginator = self._s3.get_paginator("list_objects_v2")
+
+        directories: set[str] = set()
+        files: set[str] = set()
+
+        for page in paginator.paginate(
+            Bucket=self.bucket,
+            Prefix=normalized_prefix,
+            Delimiter="/",
+        ):
+            for directory in page.get("CommonPrefixes", []):
+                key_prefix = directory.get("Prefix", "")
+                name = key_prefix[len(normalized_prefix) :].rstrip("/")
+                if name:
+                    directories.add(name)
+
+            for item in page.get("Contents", []):
+                object_key = item.get("Key", "")
+                relative = object_key[len(normalized_prefix) :]
+                if not relative or "/" in relative:
+                    continue
+                files.add(relative)
+
+        return sorted(directories), sorted(files)
+
+    def tree(self, prefix: str | None = None) -> list[str]:
+        normalized_prefix = self._normalize_prefix(prefix)
+        paginator = self._s3.get_paginator("list_objects_v2")
+
+        directory_paths: set[tuple[str, ...]] = set()
+        file_paths: set[tuple[str, ...]] = set()
+
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=normalized_prefix):
+            for item in page.get("Contents", []):
+                object_key = item.get("Key", "")
+                relative = object_key[len(normalized_prefix) :]
+                if not relative:
+                    continue
+
+                parts = tuple(segment for segment in relative.split("/") if segment)
+                if not parts:
+                    continue
+
+                file_paths.add(parts)
+                for depth in range(1, len(parts)):
+                    directory_paths.add(parts[:depth])
+
+        return self._render_tree((), directory_paths, file_paths)
+
     def _resolve_bucket(self, alias_or_bucket: str) -> str:
         return self._config.buckets.get(alias_or_bucket, alias_or_bucket)
+
+    def _normalize_prefix(self, prefix: str | None) -> str:
+        if not prefix:
+            return ""
+
+        normalized = prefix.strip("/")
+        if not normalized:
+            return ""
+        return f"{normalized}/"
+
+    def _render_tree(
+        self,
+        node: tuple[str, ...],
+        directory_paths: set[tuple[str, ...]],
+        file_paths: set[tuple[str, ...]],
+        prefix: str = "",
+    ) -> list[str]:
+        dir_children = sorted(
+            {
+                path[len(node)]
+                for path in directory_paths
+                if len(path) == len(node) + 1 and path[: len(node)] == node
+            }
+        )
+        file_children = sorted(
+            {
+                path[len(node)]
+                for path in file_paths
+                if len(path) == len(node) + 1 and path[: len(node)] == node
+            }
+        )
+
+        entries: list[tuple[str, bool]] = [(name, True) for name in dir_children]
+        entries.extend((name, False) for name in file_children)
+
+        lines: list[str] = []
+        for index, (name, is_directory) in enumerate(entries):
+            is_last = index == len(entries) - 1
+            branch = "`-- " if is_last else "|-- "
+            suffix = "/" if is_directory else ""
+            lines.append(f"{prefix}{branch}{name}{suffix}")
+
+            if is_directory:
+                child_prefix = f"{prefix}{'    ' if is_last else '|   '}"
+                lines.extend(
+                    self._render_tree(
+                        node + (name,),
+                        directory_paths,
+                        file_paths,
+                        prefix=child_prefix,
+                    )
+                )
+
+        return lines
 
     def _record_for_key(self, key: str) -> CacheRecord:
         metadata = self._s3.head_object(Bucket=self.bucket, Key=key)
