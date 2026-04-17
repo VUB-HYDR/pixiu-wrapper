@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import io
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -194,6 +195,83 @@ def test_get_from_nc_is_cacheable(tmp_path, monkeypatch):
     assert first == {"ok": True}
     assert second == {"ok": True}
     assert open_calls["count"] == 1
+
+
+def test_get_from_nc_uses_disk_cache_when_configured(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    cache_dir = tmp_path / "cache"
+    store = PixiuStore(
+        "project1",
+        config_path=config_path,
+        cache_dir=cache_dir,
+        s3_client=s3,
+        s3_filesystem=object(),
+    )
+
+    opened_paths = []
+
+    def fake_open_dataset(path, engine=None):
+        opened_paths.append((Path(path), engine))
+        return {"ok": True}
+
+    monkeypatch.setattr("pixiu.store.xr.open_dataset", fake_open_dataset)
+
+    first = store.get_from_nc("field.nc")
+    second = store.get_from_nc("field.nc")
+
+    assert first == {"ok": True}
+    assert second == {"ok": True}
+    assert len(opened_paths) == 1
+    assert opened_paths[0][1] == "h5netcdf"
+    assert opened_paths[0][0].suffix == ".nc"
+    assert opened_paths[0][0].exists()
+    assert s3.download_calls == [("hydr-bgw-project1", "field.nc", str(opened_paths[0][0]))]
+    assert s3.get_object_calls == 0
+
+
+def test_get_from_nc_redownloads_when_metadata_changes(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    class ChangingS3(FakeS3Client):
+        def __init__(self):
+            super().__init__()
+            self.head_calls = 0
+
+        def head_object(self, Bucket, Key):
+            self.head_calls += 1
+            if self.head_calls == 1:
+                return {"ETag": '"etag1"', "LastModified": datetime(2024, 1, 1, tzinfo=timezone.utc)}
+            return {"ETag": '"etag2"', "LastModified": datetime(2024, 1, 2, tzinfo=timezone.utc)}
+
+    s3 = ChangingS3()
+    cache_dir = tmp_path / "cache"
+    store = PixiuStore(
+        "project1",
+        config_path=config_path,
+        cache_dir=cache_dir,
+        s3_client=s3,
+        s3_filesystem=object(),
+    )
+
+    open_calls = {"count": 0}
+
+    def fake_open_dataset(path, engine=None):
+        open_calls["count"] += 1
+        return {"call": open_calls["count"]}
+
+    monkeypatch.setattr("pixiu.store.xr.open_dataset", fake_open_dataset)
+
+    first = store.get_from_nc("field.nc")
+    second = store.get_from_nc("field.nc")
+
+    assert first == {"call": 1}
+    assert second == {"call": 2}
+    assert open_calls["count"] == 2
+    assert len(s3.download_calls) == 2
 
 
 def test_ls_and_tree(tmp_path):

@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from hashlib import sha256
-import json
 from pathlib import Path
-import pickle
 from typing import Any
+
+from diskcache import Cache
 
 
 @dataclass(frozen=True)
@@ -47,55 +46,30 @@ class InMemoryCache:
 
 class DiskCache:
     def __init__(self, cache_dir: Path | str) -> None:
-        self._cache_dir = Path(cache_dir)
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = Path(cache_dir)
+        cache_path.mkdir(parents=True, exist_ok=True)
+        self._cache = Cache(str(cache_path))
 
     def get(self, key: str, record: CacheRecord) -> Any | None:
-        metadata_path, value_path = self._paths(key)
-        if not metadata_path.exists() or not value_path.exists():
+        value = self._cache.get(key, default=None)
+        if value is None:
             return None
 
         try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            cached_record = CacheRecord(
-                etag=metadata.get("etag"),
-                last_modified=metadata.get("last_modified"),
-            )
+            cached_record, cached_value = value
             if cached_record != record:
-                self._delete(key)
+                self._cache.pop(key, default=None)
                 return None
-
-            with value_path.open("rb") as f:
-                return pickle.load(f)
-        except (OSError, ValueError, pickle.PickleError):
-            self._delete(key)
+            return cached_value
+        except Exception:
+            self._cache.pop(key, default=None)
             return None
 
     def set(self, key: str, record: CacheRecord, value: Any) -> None:
-        metadata_path, value_path = self._paths(key)
-        metadata = {"etag": record.etag, "last_modified": record.last_modified}
-
-        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-        with value_path.open("wb") as f:
-            pickle.dump(value, f)
+        self._cache.set(key, (record, value))
 
     def clear(self) -> None:
-        for child in self._cache_dir.glob("*.json"):
-            child.unlink(missing_ok=True)
-        for child in self._cache_dir.glob("*.pkl"):
-            child.unlink(missing_ok=True)
-
-    def _delete(self, key: str) -> None:
-        metadata_path, value_path = self._paths(key)
-        metadata_path.unlink(missing_ok=True)
-        value_path.unlink(missing_ok=True)
-
-    def _paths(self, key: str) -> tuple[Path, Path]:
-        digest = sha256(key.encode("utf-8")).hexdigest()
-        return (
-            self._cache_dir / f"{digest}.json",
-            self._cache_dir / f"{digest}.pkl",
-        )
+        self._cache.clear()
 
 
 class PixiuCache:
@@ -120,10 +94,16 @@ class PixiuCache:
             self._memory.set(key, record, value)
         return value
 
+    def get_memory(self, key: str, record: CacheRecord) -> Any | None:
+        return self._memory.get(key, record)
+
     def set(self, key: str, record: CacheRecord, value: Any) -> None:
         self._memory.set(key, record, value)
         if self._disk is not None:
             self._disk.set(key, record, value)
+
+    def set_memory(self, key: str, record: CacheRecord, value: Any) -> None:
+        self._memory.set(key, record, value)
 
     def clear(self) -> None:
         self._memory.clear()

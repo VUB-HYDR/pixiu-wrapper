@@ -6,6 +6,7 @@ from datetime import datetime
 import io
 import json
 from pathlib import Path
+from hashlib import sha256
 from typing import Any
 
 import boto3
@@ -32,6 +33,7 @@ class PixiuStore:
     ) -> None:
         self._config = load_config(config_path)
         self.bucket = self._resolve_bucket(bucket)
+        self._cache_dir = Path(cache_dir) if cache_dir is not None else None
 
         self._cache = PixiuCache(
             max_entries=max_cache_entries,
@@ -79,14 +81,23 @@ class PixiuStore:
             record = self._record_for_key(key)
             cache_key = f"nc:{self.bucket}:{key}"
 
-            cached = self._cache.get(cache_key, record)
+            cached = self._cache.get_memory(cache_key, record)
             if cached is not None:
                 return cached
 
-            obj = self._s3.get_object(Bucket=self.bucket, Key=key)
-            binary = obj["Body"].read()
-            dataset = xr.open_dataset(io.BytesIO(binary), engine="h5netcdf")
-            self._cache.set(cache_key, record, dataset)
+            if self._cache_dir is not None:
+                local_path = self._nc_local_path(cache_key)
+                if not self._nc_local_is_fresh(cache_key, record) or not local_path.exists():
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._s3.download_file(self.bucket, key, str(local_path))
+                    self._write_nc_metadata(cache_key, record)
+                dataset = xr.open_dataset(local_path, engine="h5netcdf")
+            else:
+                obj = self._s3.get_object(Bucket=self.bucket, Key=key)
+                binary = obj["Body"].read()
+                dataset = xr.open_dataset(io.BytesIO(binary), engine="h5netcdf")
+
+            self._cache.set_memory(cache_key, record, dataset)
             return dataset
         except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
             self._raise_external_error("read NetCDF", key, exc)
@@ -268,6 +279,41 @@ class PixiuStore:
         except TypeError:
             fingerprint = repr(sorted(read_csv_kwargs.items(), key=lambda item: item[0]))
         return f"csv:{self.bucket}:{key}:{fingerprint}"
+
+    def _nc_local_path(self, cache_key: str) -> Path:
+        if self._cache_dir is None:
+            raise RuntimeError("Disk cache path requested but cache_dir is not configured.")
+
+        digest = sha256(cache_key.encode("utf-8")).hexdigest()
+        return self._cache_dir / "nc" / f"{digest}.nc"
+
+    def _nc_metadata_path(self, cache_key: str) -> Path:
+        if self._cache_dir is None:
+            raise RuntimeError("Disk cache metadata requested but cache_dir is not configured.")
+
+        digest = sha256(cache_key.encode("utf-8")).hexdigest()
+        return self._cache_dir / "nc" / f"{digest}.json"
+
+    def _nc_local_is_fresh(self, cache_key: str, record: CacheRecord) -> bool:
+        metadata_path = self._nc_metadata_path(cache_key)
+        if not metadata_path.exists():
+            return False
+
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            cached_record = CacheRecord(
+                etag=metadata.get("etag"),
+                last_modified=metadata.get("last_modified"),
+            )
+            return cached_record == record
+        except (OSError, ValueError):
+            return False
+
+    def _write_nc_metadata(self, cache_key: str, record: CacheRecord) -> None:
+        metadata_path = self._nc_metadata_path(cache_key)
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata = {"etag": record.etag, "last_modified": record.last_modified}
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
     def _raise_external_error(self, operation: str, target: str, exc: Exception) -> None:
         raise ExternalDependencyError(
