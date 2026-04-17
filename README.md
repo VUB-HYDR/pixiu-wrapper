@@ -90,6 +90,26 @@ print("\n".join(tree_lines))
 # Create folder markers through s3fs wrappers
 store.mkdir("uploads/2026")
 store.makedirs("uploads/2026/04", exist_ok=True)
+
+# Delete one object or purge a folder-like prefix
+store.rm("uploads/file.txt")
+store.purge("uploads/2026")
+```
+
+Delete from CLI:
+
+```bash
+# Delete a single key
+pixiu rm project1 uploads/file.txt
+
+# Recursively purge a prefix (asks for confirmation)
+pixiu rm project1 uploads/2026 --recursive
+
+# Skip prompt in automation
+pixiu rm project1 uploads/2026 --recursive --yes
+
+# Dedicated purge alias (always recursive, asks confirmation unless --yes)
+pixiu purge project1 uploads/2026
 ```
 
 ### Download modes

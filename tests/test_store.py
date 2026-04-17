@@ -35,6 +35,7 @@ class FakeS3FileSystem:
     def __init__(self):
         self.mkdir_calls = []
         self.makedirs_calls = []
+        self.rm_calls = []
 
     def ls(self, path, detail=True):
         assert detail is True
@@ -64,6 +65,9 @@ class FakeS3FileSystem:
 
     def makedirs(self, path, exist_ok=False):
         self.makedirs_calls.append((path, exist_ok))
+
+    def rm(self, path, recursive=False):
+        self.rm_calls.append((path, recursive))
 
 
 class FakeS3Client:
@@ -238,6 +242,25 @@ def test_folder_creation_wrappers(tmp_path):
     assert fs.makedirs_calls == [("hydr-bgw-project1/runs/2026/04", True)]
 
 
+def test_delete_wrappers(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    fs = FakeS3FileSystem()
+    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=fs)
+
+    store.rm("uploads/one.csv")
+    store.rm("uploads/folder", recursive=True)
+    store.purge("uploads/folder2")
+
+    assert fs.rm_calls == [
+        ("hydr-bgw-project1/uploads/one.csv", False),
+        ("hydr-bgw-project1/uploads/folder", True),
+        ("hydr-bgw-project1/uploads/folder2", True),
+    ]
+
+
 def test_get_from_csv_wraps_external_errors(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
     write_config(config_path)
@@ -302,3 +325,30 @@ def test_mkdir_wraps_external_errors(tmp_path):
 
     assert "Could not create folder tree 'a/b/c'" in str(makedirs_exc.value)
     assert "RuntimeError: makedirs failed" in str(makedirs_exc.value)
+
+
+def test_rm_and_purge_wrap_external_errors(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+
+    class FailingFs:
+        def rm(self, path, recursive=False):
+            if recursive:
+                raise RuntimeError("purge failed")
+            raise RuntimeError("rm failed")
+
+    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=FailingFs())
+
+    with pytest.raises(ExternalDependencyError) as rm_exc:
+        store.rm("one.csv")
+
+    assert "Could not remove object(s) 'one.csv'" in str(rm_exc.value)
+    assert "RuntimeError: rm failed" in str(rm_exc.value)
+
+    with pytest.raises(ExternalDependencyError) as purge_exc:
+        store.purge("folder")
+
+    assert "Could not purge folder 'folder'" in str(purge_exc.value)
+    assert "RuntimeError: purge failed" in str(purge_exc.value)

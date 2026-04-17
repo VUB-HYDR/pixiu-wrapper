@@ -136,6 +136,72 @@ def tree_command(
         typer.echo(line)
 
 
+@app.command("rm")
+def rm_command(
+    bucket: Annotated[str, typer.Argument(help="Bucket alias (or raw bucket name)")],
+    path: Annotated[str, typer.Argument(help="Object key or folder-like prefix")],
+    recursive: Annotated[
+        bool,
+        typer.Option("--recursive", "-r", help="Delete recursively under the given path."),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip confirmation prompt for recursive delete."),
+    ] = False,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config-path", hidden=True),
+    ] = None,
+) -> None:
+    """Delete one object, or recursively purge a prefix with confirmation."""
+    if recursive and not yes:
+        confirmed = typer.confirm(
+            f"This will permanently delete all objects under '{path}'. Continue?",
+            default=False,
+        )
+        if not confirmed:
+            typer.secho("Delete aborted.", fg=typer.colors.YELLOW, err=True)
+            raise typer.Exit(code=1)
+
+    try:
+        store = PixiuStore(bucket=bucket.strip(), config_path=config_path)
+        if recursive:
+            store.purge(path.strip())
+        else:
+            store.rm(path.strip(), recursive=False)
+    except PixiuError as exc:
+        typer.secho(f"Delete failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        typer.secho(f"Delete failed unexpectedly: {type(exc).__name__}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.secho("Delete completed.", fg=typer.colors.GREEN)
+
+
+@app.command("purge")
+def purge_command(
+    bucket: Annotated[str, typer.Argument(help="Bucket alias (or raw bucket name)")],
+    path: Annotated[str, typer.Argument(help="Folder-like prefix to purge recursively")],
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip confirmation prompt for recursive delete."),
+    ] = False,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config-path", hidden=True),
+    ] = None,
+) -> None:
+    """Recursively purge all objects under a prefix with confirmation by default."""
+    rm_command(
+        bucket=bucket,
+        path=path,
+        recursive=True,
+        yes=yes,
+        config_path=config_path,
+    )
+
+
 def main() -> None:
     app()
 

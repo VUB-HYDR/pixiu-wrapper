@@ -212,6 +212,20 @@ class PixiuStore:
         except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
             self._raise_external_error("create folder tree", path, exc)
 
+    def rm(self, path: str, recursive: bool = False) -> None:
+        target = self._s3_path(path)
+        try:
+            self._fs.rm(target, recursive=recursive)
+        except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+            self._raise_external_error("remove object(s)", path, exc)
+
+    def purge(self, path: str) -> None:
+        target = self._s3_path(path)
+        try:
+            self._fs.rm(target, recursive=True)
+        except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+            self._raise_external_error("purge folder", path, exc)
+
     def _resolve_bucket(self, alias_or_bucket: str) -> str:
         return self._config.buckets.get(alias_or_bucket, alias_or_bucket)
 
