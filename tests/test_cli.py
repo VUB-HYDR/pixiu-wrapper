@@ -24,6 +24,11 @@ class FakeBrowseStore:
         return ["|-- next_folder/", "|   `-- file.csv", "`-- root.csv"]
 
 
+class FailingBrowseStore:
+    def __init__(self, bucket, config_path=None):
+        raise RuntimeError("boom")
+
+
 def test_setup_writes_config(tmp_path):
     config_path = tmp_path / "config.toml"
 
@@ -106,3 +111,13 @@ def test_ls_and_tree_commands(monkeypatch):
     assert tree_nested.exit_code == 0
     assert tree_nested.stdout.splitlines()[0] == "next_folder"
     assert "`-- nested/" in tree_nested.stdout
+
+
+def test_ls_reports_unexpected_errors(monkeypatch):
+    monkeypatch.setattr("pixiu.cli.PixiuStore", FailingBrowseStore)
+
+    result = runner.invoke(app, ["ls", "project1"])
+
+    assert result.exit_code == 1
+    assert "Browse failed unexpectedly" in result.stderr
+    assert "RuntimeError: boom" in result.stderr

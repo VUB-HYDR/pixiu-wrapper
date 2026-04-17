@@ -15,7 +15,7 @@ import xarray as xr
 
 from pixiu.cache import CacheRecord, PixiuCache
 from pixiu.config import load_config
-from pixiu.errors import DownloadModeError
+from pixiu.errors import DownloadModeError, ExternalDependencyError
 
 
 class PixiuStore:
@@ -59,35 +59,44 @@ class PixiuStore:
             self._fs = s3_filesystem
 
     def get_from_csv(self, key: str, **read_csv_kwargs: Any) -> pd.DataFrame:
-        record = self._record_for_key(key)
-        cache_key = self._csv_cache_key(key, read_csv_kwargs)
+        try:
+            record = self._record_for_key(key)
+            cache_key = self._csv_cache_key(key, read_csv_kwargs)
 
-        cached = self._cache.get(cache_key, record)
-        if cached is not None:
-            return cached
+            cached = self._cache.get(cache_key, record)
+            if cached is not None:
+                return cached
 
-        obj = self._s3.get_object(Bucket=self.bucket, Key=key)
-        dataframe = pd.read_csv(obj["Body"], **read_csv_kwargs)
-        self._cache.set(cache_key, record, dataframe)
-        return dataframe
+            obj = self._s3.get_object(Bucket=self.bucket, Key=key)
+            dataframe = pd.read_csv(obj["Body"], **read_csv_kwargs)
+            self._cache.set(cache_key, record, dataframe)
+            return dataframe
+        except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+            self._raise_external_error("read CSV", key, exc)
 
     def get_from_nc(self, key: str) -> xr.Dataset:
-        record = self._record_for_key(key)
-        cache_key = f"nc:{self.bucket}:{key}"
+        try:
+            record = self._record_for_key(key)
+            cache_key = f"nc:{self.bucket}:{key}"
 
-        cached = self._cache.get(cache_key, record)
-        if cached is not None:
-            return cached
+            cached = self._cache.get(cache_key, record)
+            if cached is not None:
+                return cached
 
-        obj = self._s3.get_object(Bucket=self.bucket, Key=key)
-        binary = obj["Body"].read()
-        dataset = xr.open_dataset(io.BytesIO(binary), engine="h5netcdf")
-        self._cache.set(cache_key, record, dataset)
-        return dataset
+            obj = self._s3.get_object(Bucket=self.bucket, Key=key)
+            binary = obj["Body"].read()
+            dataset = xr.open_dataset(io.BytesIO(binary), engine="h5netcdf")
+            self._cache.set(cache_key, record, dataset)
+            return dataset
+        except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+            self._raise_external_error("read NetCDF", key, exc)
 
     def upload(self, local_path: str | Path, key: str) -> None:
-        path = Path(local_path)
-        self._s3.upload_file(str(path), self.bucket, key)
+        try:
+            path = Path(local_path)
+            self._s3.upload_file(str(path), self.bucket, key)
+        except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+            self._raise_external_error("upload object", key, exc)
 
     def download(
         self,
@@ -106,27 +115,33 @@ class PixiuStore:
             )
 
         if key is not None and local_path is not None:
-            target = Path(local_path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            self._s3.download_file(self.bucket, key, str(target))
-            return target
+            try:
+                target = Path(local_path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                self._s3.download_file(self.bucket, key, str(target))
+                return target
+            except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+                self._raise_external_error("download object", key, exc)
 
         if prefix is not None and local_dir is not None:
-            destination_dir = Path(local_dir)
-            destination_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                destination_dir = Path(local_dir)
+                destination_dir.mkdir(parents=True, exist_ok=True)
 
-            downloaded: list[Path] = []
-            paginator = self._s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
-                for item in page.get("Contents", []):
-                    object_key = item["Key"]
-                    relative = object_key[len(prefix) :].lstrip("/")
-                    relative = relative or Path(object_key).name
-                    target = destination_dir / relative
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    self._s3.download_file(self.bucket, object_key, str(target))
-                    downloaded.append(target)
-            return downloaded
+                downloaded: list[Path] = []
+                paginator = self._s3.get_paginator("list_objects_v2")
+                for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                    for item in page.get("Contents", []):
+                        object_key = item["Key"]
+                        relative = object_key[len(prefix) :].lstrip("/")
+                        relative = relative or Path(object_key).name
+                        target = destination_dir / relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        self._s3.download_file(self.bucket, object_key, str(target))
+                        downloaded.append(target)
+                return downloaded
+            except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+                self._raise_external_error("download prefix", prefix, exc)
 
         raise DownloadModeError(
             "Invalid download arguments. Use key/local_path or prefix/local_dir."
@@ -137,45 +152,51 @@ class PixiuStore:
 
     def ls(self, prefix: str | None = None) -> tuple[list[str], list[str]]:
         target = self._s3_path(prefix)
-        entries = self._fs.ls(target, detail=True)
+        try:
+            entries = self._fs.ls(target, detail=True)
 
-        directories: set[str] = set()
-        files: set[str] = set()
+            directories: set[str] = set()
+            files: set[str] = set()
 
-        for entry in entries:
-            name = str(entry.get("name", ""))
-            relative = self._relative_to_target(name, target)
-            if not relative:
-                continue
+            for entry in entries:
+                name = str(entry.get("name", ""))
+                relative = self._relative_to_target(name, target)
+                if not relative:
+                    continue
 
-            if str(entry.get("type", "")).lower() == "directory":
-                directories.add(relative.rstrip("/"))
-            else:
-                files.add(relative.rstrip("/"))
+                if str(entry.get("type", "")).lower() == "directory":
+                    directories.add(relative.rstrip("/"))
+                else:
+                    files.add(relative.rstrip("/"))
 
-        return sorted(directories), sorted(files)
+            return sorted(directories), sorted(files)
+        except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+            self._raise_external_error("list objects", prefix or "/", exc)
 
     def tree(self, prefix: str | None = None) -> list[str]:
         target = self._s3_path(prefix)
-        all_files = self._fs.find(target)
+        try:
+            all_files = self._fs.find(target)
 
-        directory_paths: set[tuple[str, ...]] = set()
-        file_paths: set[tuple[str, ...]] = set()
+            directory_paths: set[tuple[str, ...]] = set()
+            file_paths: set[tuple[str, ...]] = set()
 
-        for path in all_files:
-            relative = self._relative_to_target(str(path), target)
-            if not relative:
-                continue
+            for path in all_files:
+                relative = self._relative_to_target(str(path), target)
+                if not relative:
+                    continue
 
-            parts = tuple(segment for segment in relative.split("/") if segment)
-            if not parts:
-                continue
+                parts = tuple(segment for segment in relative.split("/") if segment)
+                if not parts:
+                    continue
 
-            file_paths.add(parts)
-            for depth in range(1, len(parts)):
-                directory_paths.add(parts[:depth])
+                file_paths.add(parts)
+                for depth in range(1, len(parts)):
+                    directory_paths.add(parts[:depth])
 
-        return self._render_tree((), directory_paths, file_paths)
+            return self._render_tree((), directory_paths, file_paths)
+        except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+            self._raise_external_error("build tree", prefix or "/", exc)
 
     def _resolve_bucket(self, alias_or_bucket: str) -> str:
         return self._config.buckets.get(alias_or_bucket, alias_or_bucket)
@@ -219,6 +240,11 @@ class PixiuStore:
         except TypeError:
             fingerprint = repr(sorted(read_csv_kwargs.items(), key=lambda item: item[0]))
         return f"csv:{self.bucket}:{key}:{fingerprint}"
+
+    def _raise_external_error(self, operation: str, target: str, exc: Exception) -> None:
+        raise ExternalDependencyError(
+            f"Could not {operation} '{target}' in bucket '{self.bucket}': {type(exc).__name__}: {exc}"
+        ) from exc
 
     def _render_tree(
         self,

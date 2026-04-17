@@ -15,3 +15,7 @@ class BucketAliasError(PixiuError):
 
 class DownloadModeError(PixiuError):
     """Raised when download arguments do not match a valid mode."""
+
+
+class ExternalDependencyError(PixiuError):
+    """Raised when a third-party dependency fails during a store operation."""

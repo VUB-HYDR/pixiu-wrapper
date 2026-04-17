@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 import io
 
 import pandas as pd
+import pytest
 
+from pixiu.errors import ExternalDependencyError
 from pixiu.store import PixiuStore
 
 
@@ -209,3 +211,41 @@ def test_ls_and_tree(tmp_path):
         "`-- nested/",
         "    `-- file.csv",
     ]
+
+
+def test_get_from_csv_wraps_external_errors(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=object())
+
+    def fail_read_csv(*args, **kwargs):
+        raise ValueError("bad csv")
+
+    monkeypatch.setattr("pixiu.store.pd.read_csv", fail_read_csv)
+
+    with pytest.raises(ExternalDependencyError) as exc_info:
+        store.get_from_csv("data.csv")
+
+    assert "Could not read CSV 'data.csv'" in str(exc_info.value)
+    assert "ValueError: bad csv" in str(exc_info.value)
+
+
+def test_ls_wraps_external_errors(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+
+    class FailingFs:
+        def ls(self, path, detail=True):
+            raise RuntimeError("s3fs unavailable")
+
+    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=FailingFs())
+
+    with pytest.raises(ExternalDependencyError) as exc_info:
+        store.ls()
+
+    assert "Could not list objects '/'" in str(exc_info.value)
+    assert "RuntimeError: s3fs unavailable" in str(exc_info.value)

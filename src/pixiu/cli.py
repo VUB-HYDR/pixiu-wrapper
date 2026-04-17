@@ -52,6 +52,9 @@ def setup(
     except PixiuError as exc:
         typer.secho(f"Setup failed: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        typer.secho(f"Setup failed unexpectedly: {type(exc).__name__}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
 
     typer.secho(
         f"Configuration saved to {path}. Pixiu is ready to use.",
@@ -74,6 +77,9 @@ def add_bucket(
     except PixiuError as exc:
         typer.secho(f"Could not add bucket: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        typer.secho(f"Could not add bucket unexpectedly: {type(exc).__name__}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
 
     typer.secho(f"Added alias '{alias}' to config {path}.", fg=typer.colors.GREEN)
 
@@ -93,6 +99,9 @@ def ls_command(
         directories, files = store.ls(path)
     except PixiuError as exc:
         typer.secho(f"Browse failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        typer.secho(f"Browse failed unexpectedly: {type(exc).__name__}: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
 
     for entry in directories:
@@ -116,6 +125,9 @@ def tree_command(
         lines = store.tree(path)
     except PixiuError as exc:
         typer.secho(f"Browse failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        typer.secho(f"Browse failed unexpectedly: {type(exc).__name__}: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
 
     root = path.strip("/") if path else "."
