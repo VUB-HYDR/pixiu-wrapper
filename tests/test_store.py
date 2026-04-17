@@ -128,7 +128,7 @@ def test_get_from_csv_uses_cache(tmp_path):
     write_config(config_path)
 
     s3 = FakeS3Client()
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=object())
+    store = PixiuStore("project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=object())
 
     first = store.get_from_csv("data.csv")
     second = store.get_from_csv("data.csv")
@@ -143,7 +143,7 @@ def test_get_from_csv_forwards_read_csv_kwargs(tmp_path):
     write_config(config_path)
 
     s3 = FakeS3Client()
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=object())
+    store = PixiuStore("project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=object())
 
     dataframe = store.get_from_csv("swap.csv", comment="*")
 
@@ -156,7 +156,7 @@ def test_upload_and_download_modes(tmp_path):
     write_config(config_path)
 
     s3 = FakeS3Client()
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=object())
+    store = PixiuStore("project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=object())
 
     source = tmp_path / "in.txt"
     source.write_text("payload", encoding="utf-8")
@@ -179,7 +179,7 @@ def test_get_from_nc_is_cacheable(tmp_path, monkeypatch):
     write_config(config_path)
 
     s3 = FakeS3Client()
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=object())
+    store = PixiuStore("project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=object())
 
     open_calls = {"count": 0}
 
@@ -280,7 +280,7 @@ def test_ls_and_tree(tmp_path):
 
     s3 = FakeS3Client()
     fs = FakeS3FileSystem()
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=fs)
+    store = PixiuStore("project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=fs)
 
     directories, files = store.ls()
     assert directories == ["nested"]
@@ -311,7 +311,7 @@ def test_folder_creation_wrappers(tmp_path):
 
     s3 = FakeS3Client()
     fs = FakeS3FileSystem()
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=fs)
+    store = PixiuStore("project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=fs)
 
     store.mkdir("runs/2026", create_parents=False)
     store.makedirs("runs/2026/04", exist_ok=True)
@@ -326,7 +326,7 @@ def test_delete_wrappers(tmp_path):
 
     s3 = FakeS3Client()
     fs = FakeS3FileSystem()
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=fs)
+    store = PixiuStore("project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=fs)
 
     store.rm("uploads/one.csv")
     store.rm("uploads/folder", recursive=True)
@@ -344,7 +344,7 @@ def test_get_from_csv_wraps_external_errors(tmp_path, monkeypatch):
     write_config(config_path)
 
     s3 = FakeS3Client()
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=object())
+    store = PixiuStore("project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=object())
 
     def fail_read_csv(*args, **kwargs):
         raise ValueError("bad csv")
@@ -368,7 +368,7 @@ def test_ls_wraps_external_errors(tmp_path):
         def ls(self, path, detail=True):
             raise RuntimeError("s3fs unavailable")
 
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=FailingFs())
+    store = PixiuStore("project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=FailingFs())
 
     with pytest.raises(ExternalDependencyError) as exc_info:
         store.ls()
@@ -390,7 +390,7 @@ def test_mkdir_wraps_external_errors(tmp_path):
         def makedirs(self, path, exist_ok=False):
             raise RuntimeError("makedirs failed")
 
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=FailingFs())
+    store = PixiuStore("project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=FailingFs())
 
     with pytest.raises(ExternalDependencyError) as mkdir_exc:
         store.mkdir("new-folder")
@@ -417,7 +417,7 @@ def test_rm_and_purge_wrap_external_errors(tmp_path):
                 raise RuntimeError("purge failed")
             raise RuntimeError("rm failed")
 
-    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=FailingFs())
+    store = PixiuStore("project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=FailingFs())
 
     with pytest.raises(ExternalDependencyError) as rm_exc:
         store.rm("one.csv")
@@ -430,3 +430,66 @@ def test_rm_and_purge_wrap_external_errors(tmp_path):
 
     assert "Could not purge folder 'folder'" in str(purge_exc.value)
     assert "RuntimeError: purge failed" in str(purge_exc.value)
+
+
+def test_default_cache_dir_is_enabled(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    store = PixiuStore("project1", config_path=config_path, s3_client=FakeS3Client(), s3_filesystem=object())
+
+    assert store._cache_dir is not None
+    assert str(store._cache_dir).endswith(".pixiu/cache")
+
+
+def test_clear_cache_removes_nc_artifacts(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    cache_dir = tmp_path / "cache"
+    store = PixiuStore(
+        "project1",
+        config_path=config_path,
+        cache_dir=cache_dir,
+        s3_client=s3,
+        s3_filesystem=object(),
+    )
+
+    monkeypatch.setattr("pixiu.store.xr.open_dataset", lambda *args, **kwargs: {"ok": True})
+    store.get_from_nc("field.nc")
+
+    nc_dir = cache_dir / "nc"
+    assert any(nc_dir.glob("*.nc"))
+    assert any(nc_dir.glob("*.json"))
+
+    store.clear_cache()
+
+    assert not nc_dir.exists()
+
+
+def test_nc_cache_prunes_old_files_by_count(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    cache_dir = tmp_path / "cache"
+    store = PixiuStore(
+        "project1",
+        config_path=config_path,
+        cache_dir=cache_dir,
+        max_nc_cache_files=1,
+        max_nc_cache_bytes=None,
+        s3_client=s3,
+        s3_filesystem=object(),
+    )
+
+    monkeypatch.setattr("pixiu.store.xr.open_dataset", lambda *args, **kwargs: {"ok": True})
+
+    store.get_from_nc("field-1.nc")
+    store.get_from_nc("field-2.nc")
+
+    nc_files = list((cache_dir / "nc").glob("*.nc"))
+    metadata_files = list((cache_dir / "nc").glob("*.json"))
+    assert len(nc_files) == 1
+    assert len(metadata_files) == 1

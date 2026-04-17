@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 import io
 import json
-from pathlib import Path
 from hashlib import sha256
+from pathlib import Path
+import shutil
 from typing import Any
 
 import boto3
@@ -14,7 +15,7 @@ import pandas as pd
 import s3fs
 import xarray as xr
 
-from pixiu.cache import CacheRecord, PixiuCache
+from pixiu.cache import CacheRecord, InMemoryCache
 from pixiu.config import load_config
 from pixiu.errors import DownloadModeError, ExternalDependencyError
 
@@ -26,18 +27,21 @@ class PixiuStore:
         self,
         bucket: str,
         config_path: Path | str | None = None,
-        cache_dir: Path | str | None = None,
+        cache_dir: Path | str | None = Path.home() / ".pixiu" / "cache",
         max_cache_entries: int = 128,
+        max_nc_cache_files: int | None = 256,
+        max_nc_cache_bytes: int | None = 10 * 1024 * 1024 * 1024,
         s3_client: Any | None = None,
         s3_filesystem: Any | None = None,
     ) -> None:
         self._config = load_config(config_path)
         self.bucket = self._resolve_bucket(bucket)
         self._cache_dir = Path(cache_dir) if cache_dir is not None else None
+        self._max_nc_cache_files = max_nc_cache_files
+        self._max_nc_cache_bytes = max_nc_cache_bytes
 
-        self._cache = PixiuCache(
+        self._cache = InMemoryCache(
             max_entries=max_cache_entries,
-            disk_cache_dir=cache_dir,
         )
 
         if s3_client is None:
@@ -81,7 +85,7 @@ class PixiuStore:
             record = self._record_for_key(key)
             cache_key = f"nc:{self.bucket}:{key}"
 
-            cached = self._cache.get_memory(cache_key, record)
+            cached = self._cache.get(cache_key, record)
             if cached is not None:
                 return cached
 
@@ -91,13 +95,14 @@ class PixiuStore:
                     local_path.parent.mkdir(parents=True, exist_ok=True)
                     self._s3.download_file(self.bucket, key, str(local_path))
                     self._write_nc_metadata(cache_key, record)
+                    self._prune_nc_cache()
                 dataset = xr.open_dataset(local_path, engine="h5netcdf")
             else:
                 obj = self._s3.get_object(Bucket=self.bucket, Key=key)
                 binary = obj["Body"].read()
                 dataset = xr.open_dataset(io.BytesIO(binary), engine="h5netcdf")
 
-            self._cache.set_memory(cache_key, record, dataset)
+            self._cache.set(cache_key, record, dataset)
             return dataset
         except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
             self._raise_external_error("read NetCDF", key, exc)
@@ -160,6 +165,8 @@ class PixiuStore:
 
     def clear_cache(self) -> None:
         self._cache.clear()
+        if self._cache_dir is not None:
+            shutil.rmtree(self._cache_dir / "nc", ignore_errors=True)
 
     def ls(self, prefix: str | None = None) -> tuple[list[str], list[str]]:
         target = self._s3_path(prefix)
@@ -314,6 +321,34 @@ class PixiuStore:
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         metadata = {"etag": record.etag, "last_modified": record.last_modified}
         metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    def _prune_nc_cache(self) -> None:
+        if self._cache_dir is None:
+            return
+
+        nc_dir = self._cache_dir / "nc"
+        if not nc_dir.exists():
+            return
+
+        nc_files = sorted(nc_dir.glob("*.nc"), key=lambda path: path.stat().st_mtime)
+        if not nc_files:
+            return
+
+        total_bytes = sum(path.stat().st_size for path in nc_files)
+
+        while nc_files and self._needs_prune(len(nc_files), total_bytes):
+            victim = nc_files.pop(0)
+            victim_size = victim.stat().st_size
+            victim.unlink(missing_ok=True)
+            victim.with_suffix(".json").unlink(missing_ok=True)
+            total_bytes = max(0, total_bytes - victim_size)
+
+    def _needs_prune(self, count: int, total_bytes: int) -> bool:
+        if self._max_nc_cache_files is not None and count > self._max_nc_cache_files:
+            return True
+        if self._max_nc_cache_bytes is not None and total_bytes > self._max_nc_cache_bytes:
+            return True
+        return False
 
     def _raise_external_error(self, operation: str, target: str, exc: Exception) -> None:
         raise ExternalDependencyError(
