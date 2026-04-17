@@ -198,6 +198,20 @@ class PixiuStore:
         except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
             self._raise_external_error("build tree", prefix or "/", exc)
 
+    def mkdir(self, path: str, create_parents: bool = True) -> None:
+        target = self._s3_path(path)
+        try:
+            self._fs.mkdir(target, create_parents=create_parents)
+        except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+            self._raise_external_error("create folder", path, exc)
+
+    def makedirs(self, path: str, exist_ok: bool = False) -> None:
+        target = self._s3_path(path)
+        try:
+            self._fs.makedirs(target, exist_ok=exist_ok)
+        except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+            self._raise_external_error("create folder tree", path, exc)
+
     def _resolve_bucket(self, alias_or_bucket: str) -> str:
         return self._config.buckets.get(alias_or_bucket, alias_or_bucket)
 

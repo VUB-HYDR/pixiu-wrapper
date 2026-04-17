@@ -86,6 +86,10 @@ print("files:", files)
 
 tree_lines = store.tree("uploads")
 print("\n".join(tree_lines))
+
+# Create folder markers through s3fs wrappers
+store.mkdir("uploads/2026")
+store.makedirs("uploads/2026/04", exist_ok=True)
 ```
 
 ### Download modes

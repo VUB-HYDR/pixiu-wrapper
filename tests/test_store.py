@@ -32,6 +32,10 @@ class FakePaginator:
 
 
 class FakeS3FileSystem:
+    def __init__(self):
+        self.mkdir_calls = []
+        self.makedirs_calls = []
+
     def ls(self, path, detail=True):
         assert detail is True
         if path.endswith("next_folder"):
@@ -54,6 +58,12 @@ class FakeS3FileSystem:
             f"{path}/nested/b.csv",
             f"{path}/nested/c.csv",
         ]
+
+    def mkdir(self, path, create_parents=True):
+        self.mkdir_calls.append((path, create_parents))
+
+    def makedirs(self, path, exist_ok=False):
+        self.makedirs_calls.append((path, exist_ok))
 
 
 class FakeS3Client:
@@ -213,6 +223,21 @@ def test_ls_and_tree(tmp_path):
     ]
 
 
+def test_folder_creation_wrappers(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    fs = FakeS3FileSystem()
+    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=fs)
+
+    store.mkdir("runs/2026", create_parents=False)
+    store.makedirs("runs/2026/04", exist_ok=True)
+
+    assert fs.mkdir_calls == [("hydr-bgw-project1/runs/2026", False)]
+    assert fs.makedirs_calls == [("hydr-bgw-project1/runs/2026/04", True)]
+
+
 def test_get_from_csv_wraps_external_errors(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
     write_config(config_path)
@@ -249,3 +274,31 @@ def test_ls_wraps_external_errors(tmp_path):
 
     assert "Could not list objects '/'" in str(exc_info.value)
     assert "RuntimeError: s3fs unavailable" in str(exc_info.value)
+
+
+def test_mkdir_wraps_external_errors(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+
+    class FailingFs:
+        def mkdir(self, path, create_parents=True):
+            raise RuntimeError("mkdir failed")
+
+        def makedirs(self, path, exist_ok=False):
+            raise RuntimeError("makedirs failed")
+
+    store = PixiuStore("project1", config_path=config_path, s3_client=s3, s3_filesystem=FailingFs())
+
+    with pytest.raises(ExternalDependencyError) as mkdir_exc:
+        store.mkdir("new-folder")
+
+    assert "Could not create folder 'new-folder'" in str(mkdir_exc.value)
+    assert "RuntimeError: mkdir failed" in str(mkdir_exc.value)
+
+    with pytest.raises(ExternalDependencyError) as makedirs_exc:
+        store.makedirs("a/b/c")
+
+    assert "Could not create folder tree 'a/b/c'" in str(makedirs_exc.value)
+    assert "RuntimeError: makedirs failed" in str(makedirs_exc.value)
