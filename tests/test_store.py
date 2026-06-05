@@ -37,6 +37,11 @@ class FakeS3FileSystem:
         self.mkdir_calls = []
         self.makedirs_calls = []
         self.rm_calls = []
+        self.get_mapper_calls = []
+
+    def get_mapper(self, path):
+        self.get_mapper_calls.append(path)
+        return {"__mapper_for__": path}
 
     def ls(self, path, detail=True):
         assert detail is True
@@ -590,6 +595,86 @@ def test_get_file_prunes_old_files_by_count(tmp_path):
     files_dir = cache_dir / "files"
     assert len(list(files_dir.glob("*.sqlite"))) == 1
     assert len(list(files_dir.glob("*.json"))) == 1
+
+
+def test_open_zarr_opens_lazily_via_fs_mapper(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    fs = FakeS3FileSystem()
+    store = PixiuStore(
+        "project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=fs
+    )
+
+    open_zarr_calls = []
+
+    def fake_open_zarr(mapper, **kwargs):
+        open_zarr_calls.append((mapper, kwargs))
+        return {"ds": True}
+
+    monkeypatch.setattr("pixiu.store.xr.open_zarr", fake_open_zarr)
+
+    result = store.open_zarr("path/field.zarr")
+
+    # Returns whatever xr.open_zarr returns.
+    assert result == {"ds": True}
+    # Uses the mapper produced by the filesystem.
+    assert fs.get_mapper_calls == ["hydr-bgw-project1/path/field.zarr"]
+    assert len(open_zarr_calls) == 1
+    mapper, _ = open_zarr_calls[0]
+    assert mapper == {"__mapper_for__": "hydr-bgw-project1/path/field.zarr"}
+
+    # Key guarantee: nothing is downloaded - this is a lazy/partial read.
+    assert s3.download_calls == []
+    assert s3.get_object_calls == 0
+
+
+def test_open_zarr_forwards_kwargs(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    fs = FakeS3FileSystem()
+    store = PixiuStore(
+        "project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=fs
+    )
+
+    open_zarr_calls = []
+
+    def fake_open_zarr(mapper, **kwargs):
+        open_zarr_calls.append((mapper, kwargs))
+        return {"ds": True}
+
+    monkeypatch.setattr("pixiu.store.xr.open_zarr", fake_open_zarr)
+
+    store.open_zarr("x.zarr", group="g", consolidated=False)
+
+    assert len(open_zarr_calls) == 1
+    _, kwargs = open_zarr_calls[0]
+    assert kwargs == {"group": "g", "consolidated": False}
+
+
+def test_open_zarr_wraps_external_errors(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    fs = FakeS3FileSystem()
+    store = PixiuStore(
+        "project1", config_path=config_path, cache_dir=None, s3_client=s3, s3_filesystem=fs
+    )
+
+    def fail_open_zarr(*args, **kwargs):
+        raise RuntimeError("zarr boom")
+
+    monkeypatch.setattr("pixiu.store.xr.open_zarr", fail_open_zarr)
+
+    with pytest.raises(ExternalDependencyError) as exc_info:
+        store.open_zarr("x.zarr")
+
+    assert "Could not open Zarr 'x.zarr'" in str(exc_info.value)
+    assert "RuntimeError: zarr boom" in str(exc_info.value)
 
 
 def test_nc_cache_prunes_old_files_by_count(tmp_path, monkeypatch):

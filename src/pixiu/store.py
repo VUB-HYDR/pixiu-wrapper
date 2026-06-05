@@ -128,6 +128,25 @@ class PixiuStore:
         except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
             self._raise_external_error("download file", key, exc)
 
+    def open_zarr(self, key: str, **kwargs: Any) -> xr.Dataset:
+        """Open a Zarr store **lazily over S3** and return an ``xarray.Dataset``.
+
+        Unlike :meth:`get_from_nc` and :meth:`get_file` - which both download the
+        *entire* object first - this opens the store directly over the existing
+        ``s3fs`` filesystem and reads only the chunks you actually slice. Calls
+        like ``store.open_zarr(...)["var"].sel(time="2024-01").load()`` stream
+        just the selected chunks instead of pulling the whole dataset, so it is
+        the right choice for large Zarr stores where you need partial reads.
+
+        Extra keyword arguments are forwarded to :func:`xarray.open_zarr`
+        (for example ``group=`` or ``consolidated=``).
+        """
+        try:
+            mapper = self._fs.get_mapper(self._s3_path(key))
+            return xr.open_zarr(mapper, **kwargs)
+        except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+            self._raise_external_error("open Zarr", key, exc)
+
     def upload(self, local_path: str | Path, key: str) -> None:
         try:
             path = Path(local_path)
