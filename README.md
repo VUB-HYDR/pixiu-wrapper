@@ -76,6 +76,9 @@ ds = store.get_from_nc("data/field.nc")
 # Cached local copy for path-based formats (SQLite, GeoPackage, Parquet, ...)
 db_path = store.get_file("data/heads.sqlite")  # -> pathlib.Path in the disk cache
 
+# Lazy, partial read of a Zarr store over S3 (no full download)
+zds = store.open_zarr("data/field.zarr")
+
 # Forward pandas.read_csv kwargs for non-standard CSV files
 swap_df = store.get_from_csv("data/input/result_output.csv", comment="*", parse_dates=["DATETIME"])
 
@@ -151,6 +154,21 @@ requires the store to have a `cache_dir` (the default); a store created with
 
 > `download()` is the raw, **uncached** transfer primitive — it always re-fetches
 > to the destination you name. Use `get_file()` when you want a cached local copy.
+
+### Lazy Zarr access (partial reads)
+
+For large Zarr stores, `open_zarr` opens the store directly over the S3
+filesystem and reads only the chunks you slice — a true partial read:
+
+```python
+ds = store.open_zarr("path/field.zarr")
+subset = ds["var"].sel(time="2024-01").load()
+```
+
+Unlike `get_from_nc` and `get_file`, which download the whole object before you
+can touch it, `open_zarr` streams only the chunks you actually select. Extra
+keyword arguments are forwarded to `xarray.open_zarr` (for example `group=` or
+`consolidated=`).
 
 ### Optional disk cache
 
