@@ -17,5 +17,9 @@ class DownloadModeError(PixiuError):
     """Raised when download arguments do not match a valid mode."""
 
 
+class CacheDisabledError(PixiuError):
+    """Raised when a cache-backed operation is requested but no cache_dir is set."""
+
+
 class ExternalDependencyError(PixiuError):
     """Raised when a third-party dependency fails during a store operation."""

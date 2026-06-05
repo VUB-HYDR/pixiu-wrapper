@@ -17,7 +17,7 @@ import xarray as xr
 
 from pixiu.cache import CacheRecord, InMemoryCache
 from pixiu.config import load_config
-from pixiu.errors import DownloadModeError, ExternalDependencyError
+from pixiu.errors import CacheDisabledError, DownloadModeError, ExternalDependencyError
 
 
 class PixiuStore:
@@ -90,12 +90,9 @@ class PixiuStore:
                 return cached
 
             if self._cache_dir is not None:
-                local_path = self._nc_local_path(cache_key)
-                if not self._nc_local_is_fresh(cache_key, record) or not local_path.exists():
-                    local_path.parent.mkdir(parents=True, exist_ok=True)
-                    self._s3.download_file(self.bucket, key, str(local_path))
-                    self._write_nc_metadata(cache_key, record)
-                    self._prune_nc_cache()
+                local_path = self._cached_local_path(
+                    key, subdir="nc", suffix=".nc", record=record
+                )
                 dataset = xr.open_dataset(local_path, engine="h5netcdf")
             else:
                 obj = self._s3.get_object(Bucket=self.bucket, Key=key)
@@ -106,6 +103,30 @@ class PixiuStore:
             return dataset
         except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
             self._raise_external_error("read NetCDF", key, exc)
+
+    def get_file(self, key: str) -> Path:
+        """Download ``key`` into the on-disk cache and return its local path.
+
+        Re-downloads only when the remote object changed (validated via its
+        ETag / LastModified), so repeated calls are served from disk. Use this
+        for formats that are opened by path rather than parsed into a single
+        object - SQLite, GeoPackage, Parquet, HDF5, and similar. For CSV use
+        :meth:`get_from_csv`; for NetCDF use :meth:`get_from_nc`.
+
+        Requires the store to have a ``cache_dir`` (the default); raises
+        :class:`~pixiu.errors.CacheDisabledError` when created with
+        ``cache_dir=None``.
+        """
+        if self._cache_dir is None:
+            raise CacheDisabledError(
+                "get_file requires an on-disk cache, but this store was created "
+                "with cache_dir=None."
+            )
+        try:
+            suffix = Path(key).suffix or ".bin"
+            return self._cached_local_path(key, subdir="files", suffix=suffix)
+        except Exception as exc:  # pragma: no cover - covered via tests with explicit assertion
+            self._raise_external_error("download file", key, exc)
 
     def upload(self, local_path: str | Path, key: str) -> None:
         try:
@@ -167,6 +188,7 @@ class PixiuStore:
         self._cache.clear()
         if self._cache_dir is not None:
             shutil.rmtree(self._cache_dir / "nc", ignore_errors=True)
+            shutil.rmtree(self._cache_dir / "files", ignore_errors=True)
 
     def ls(self, prefix: str | None = None) -> tuple[list[str], list[str]]:
         target = self._s3_path(prefix)
@@ -287,22 +309,45 @@ class PixiuStore:
             fingerprint = repr(sorted(read_csv_kwargs.items(), key=lambda item: item[0]))
         return f"csv:{self.bucket}:{key}:{fingerprint}"
 
-    def _nc_local_path(self, cache_key: str) -> Path:
+    def _cached_local_path(
+        self,
+        key: str,
+        *,
+        subdir: str,
+        suffix: str,
+        record: CacheRecord | None = None,
+    ) -> Path:
+        """Return a local path to ``key``, downloading it into the on-disk
+        cache only when missing or stale (changed ETag / LastModified)."""
         if self._cache_dir is None:
-            raise RuntimeError("Disk cache path requested but cache_dir is not configured.")
+            raise CacheDisabledError("Disk cache requested but cache_dir is not configured.")
+
+        if record is None:
+            record = self._record_for_key(key)
+
+        cache_key = f"{subdir}:{self.bucket}:{key}"
+        local_path = self._disk_cache_path(cache_key, subdir, suffix)
+
+        if not local_path.exists() or not self._disk_is_fresh(local_path, record):
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            self._s3.download_file(self.bucket, key, str(local_path))
+            self._write_disk_metadata(local_path, record)
+            self._prune_disk_cache(local_path.parent, suffix)
+
+        return local_path
+
+    def _disk_cache_path(self, cache_key: str, subdir: str, suffix: str) -> Path:
+        if self._cache_dir is None:
+            raise CacheDisabledError("Disk cache path requested but cache_dir is not configured.")
 
         digest = sha256(cache_key.encode("utf-8")).hexdigest()
-        return self._cache_dir / "nc" / f"{digest}.nc"
+        return self._cache_dir / subdir / f"{digest}{suffix}"
 
-    def _nc_metadata_path(self, cache_key: str) -> Path:
-        if self._cache_dir is None:
-            raise RuntimeError("Disk cache metadata requested but cache_dir is not configured.")
+    def _disk_metadata_path(self, local_path: Path) -> Path:
+        return local_path.with_suffix(".json")
 
-        digest = sha256(cache_key.encode("utf-8")).hexdigest()
-        return self._cache_dir / "nc" / f"{digest}.json"
-
-    def _nc_local_is_fresh(self, cache_key: str, record: CacheRecord) -> bool:
-        metadata_path = self._nc_metadata_path(cache_key)
+    def _disk_is_fresh(self, local_path: Path, record: CacheRecord) -> bool:
+        metadata_path = self._disk_metadata_path(local_path)
         if not metadata_path.exists():
             return False
 
@@ -316,31 +361,27 @@ class PixiuStore:
         except (OSError, ValueError):
             return False
 
-    def _write_nc_metadata(self, cache_key: str, record: CacheRecord) -> None:
-        metadata_path = self._nc_metadata_path(cache_key)
+    def _write_disk_metadata(self, local_path: Path, record: CacheRecord) -> None:
+        metadata_path = self._disk_metadata_path(local_path)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         metadata = {"etag": record.etag, "last_modified": record.last_modified}
         metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
-    def _prune_nc_cache(self) -> None:
-        if self._cache_dir is None:
+    def _prune_disk_cache(self, directory: Path, suffix: str) -> None:
+        if not directory.exists():
             return
 
-        nc_dir = self._cache_dir / "nc"
-        if not nc_dir.exists():
+        cached_files = sorted(directory.glob(f"*{suffix}"), key=lambda path: path.stat().st_mtime)
+        if not cached_files:
             return
 
-        nc_files = sorted(nc_dir.glob("*.nc"), key=lambda path: path.stat().st_mtime)
-        if not nc_files:
-            return
+        total_bytes = sum(path.stat().st_size for path in cached_files)
 
-        total_bytes = sum(path.stat().st_size for path in nc_files)
-
-        while nc_files and self._needs_prune(len(nc_files), total_bytes):
-            victim = nc_files.pop(0)
+        while cached_files and self._needs_prune(len(cached_files), total_bytes):
+            victim = cached_files.pop(0)
             victim_size = victim.stat().st_size
             victim.unlink(missing_ok=True)
-            victim.with_suffix(".json").unlink(missing_ok=True)
+            self._disk_metadata_path(victim).unlink(missing_ok=True)
             total_bytes = max(0, total_bytes - victim_size)
 
     def _needs_prune(self, count: int, total_bytes: int) -> bool:

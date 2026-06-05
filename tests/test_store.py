@@ -468,6 +468,130 @@ def test_clear_cache_removes_nc_artifacts(tmp_path, monkeypatch):
     assert not nc_dir.exists()
 
 
+def test_get_file_caches_and_returns_local_path(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    cache_dir = tmp_path / "cache"
+    store = PixiuStore(
+        "project1",
+        config_path=config_path,
+        cache_dir=cache_dir,
+        s3_client=s3,
+        s3_filesystem=object(),
+    )
+
+    first = store.get_file("data/heads.sqlite")
+    second = store.get_file("data/heads.sqlite")
+
+    assert isinstance(first, Path)
+    assert first == second
+    assert first.exists()
+    assert first.suffix == ".sqlite"
+    assert first.parent == cache_dir / "files"
+    assert first.read_bytes() == b"downloaded"
+    # Only the first call hits the network; the second is served from disk.
+    assert s3.download_calls == [("hydr-bgw-project1", "data/heads.sqlite", str(first))]
+
+
+def test_get_file_redownloads_when_metadata_changes(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    class ChangingS3(FakeS3Client):
+        def __init__(self):
+            super().__init__()
+            self.head_calls = 0
+
+        def head_object(self, Bucket, Key):
+            self.head_calls += 1
+            if self.head_calls == 1:
+                return {"ETag": '"etag1"', "LastModified": datetime(2024, 1, 1, tzinfo=timezone.utc)}
+            return {"ETag": '"etag2"', "LastModified": datetime(2024, 1, 2, tzinfo=timezone.utc)}
+
+    s3 = ChangingS3()
+    cache_dir = tmp_path / "cache"
+    store = PixiuStore(
+        "project1",
+        config_path=config_path,
+        cache_dir=cache_dir,
+        s3_client=s3,
+        s3_filesystem=object(),
+    )
+
+    store.get_file("data/heads.sqlite")
+    store.get_file("data/heads.sqlite")
+
+    assert len(s3.download_calls) == 2
+
+
+def test_get_file_requires_cache_dir(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    from pixiu.errors import CacheDisabledError
+
+    store = PixiuStore(
+        "project1",
+        config_path=config_path,
+        cache_dir=None,
+        s3_client=FakeS3Client(),
+        s3_filesystem=object(),
+    )
+
+    with pytest.raises(CacheDisabledError):
+        store.get_file("data/heads.sqlite")
+
+
+def test_clear_cache_removes_file_artifacts(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    cache_dir = tmp_path / "cache"
+    store = PixiuStore(
+        "project1",
+        config_path=config_path,
+        cache_dir=cache_dir,
+        s3_client=s3,
+        s3_filesystem=object(),
+    )
+
+    store.get_file("data/heads.sqlite")
+    files_dir = cache_dir / "files"
+    assert any(files_dir.glob("*.sqlite"))
+    assert any(files_dir.glob("*.json"))
+
+    store.clear_cache()
+
+    assert not files_dir.exists()
+
+
+def test_get_file_prunes_old_files_by_count(tmp_path):
+    config_path = tmp_path / "config.toml"
+    write_config(config_path)
+
+    s3 = FakeS3Client()
+    cache_dir = tmp_path / "cache"
+    store = PixiuStore(
+        "project1",
+        config_path=config_path,
+        cache_dir=cache_dir,
+        max_nc_cache_files=1,
+        max_nc_cache_bytes=None,
+        s3_client=s3,
+        s3_filesystem=object(),
+    )
+
+    store.get_file("data/heads-1.sqlite")
+    store.get_file("data/heads-2.sqlite")
+
+    files_dir = cache_dir / "files"
+    assert len(list(files_dir.glob("*.sqlite"))) == 1
+    assert len(list(files_dir.glob("*.json"))) == 1
+
+
 def test_nc_cache_prunes_old_files_by_count(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
     write_config(config_path)

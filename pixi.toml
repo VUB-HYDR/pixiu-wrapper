@@ -3,7 +3,7 @@ authors = ["zawadzkim <zawadzkimat@outlook.com>"]
 channels = ["conda-forge"]
 name = "pixiu-wrapper"
 platforms = ["linux-64", "win-64"]
-version = "0.1.0"
+version = "0.2.0"
 
 [tasks]
 test = "pytest -q"
