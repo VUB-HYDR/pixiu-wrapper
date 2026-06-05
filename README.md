@@ -73,6 +73,9 @@ store = pi.PixiuStore("project1")
 df = store.get_from_csv("data/table.csv")
 ds = store.get_from_nc("data/field.nc")
 
+# Cached local copy for path-based formats (SQLite, GeoPackage, Parquet, ...)
+db_path = store.get_file("data/heads.sqlite")  # -> pathlib.Path in the disk cache
+
 # Forward pandas.read_csv kwargs for non-standard CSV files
 swap_df = store.get_from_csv("data/input/result_output.csv", comment="*", parse_dates=["DATETIME"])
 
@@ -127,9 +130,33 @@ paths = store.download(prefix="model-runs/", local_dir="./runs")
 print(f"Downloaded {len(paths)} files")
 ```
 
+### Cached file access (SQLite and other path-based formats)
+
+`get_from_csv` / `get_from_nc` parse an object into an in-memory value. For
+formats you open *by path* — SQLite, GeoPackage, Parquet, HDF5, ... — use
+`get_file`, which downloads the object into the disk cache and returns a
+`pathlib.Path`:
+
+```python
+db_path = store.get_file("data/heads.sqlite")
+
+import sqlite3
+conn = sqlite3.connect(db_path)
+```
+
+`get_file` only re-downloads when the remote object changed (validated via its
+ETag / LastModified), so repeated calls are served from the local cache. It
+requires the store to have a `cache_dir` (the default); a store created with
+`cache_dir=None` raises `CacheDisabledError`.
+
+> `download()` is the raw, **uncached** transfer primitive — it always re-fetches
+> to the destination you name. Use `get_file()` when you want a cached local copy.
+
 ### Optional disk cache
 
-By default, reads are cached in memory. To persist cache between runs, provide `cache_dir`:
+By default, reads are cached in memory, and a disk cache is enabled at
+`~/.pixiu/cache` (NetCDF objects under `nc/`, `get_file` objects under
+`files/`). To use a different location, provide `cache_dir`:
 
 ```python
 store = pi.PixiuStore("project1", cache_dir=".pixiu-cache")
